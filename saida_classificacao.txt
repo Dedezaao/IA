@@ -1,0 +1,33 @@
+AUDITORIA: dados=(50000, 3); X=(50000, 2); Y=(50000, 5); X_T=(2, 50000); Y_T=(5, 50000); NaN=0; Inf=0
+CONTAGENS: classe1=10000; classe2=10000; classe3=10000; classe4=10000; classe5=10000
+SELEÇÃO_Q: R=10; tolerância=0.005; q_melhor=6; q_escolhido=4
+q;n_caracteristicas;acuracia_media;tempo_estimacao_s
+1;2;0.72292000;0.00212887
+2;5;0.95505000;0.00203339
+3;9;0.98716000;0.00270268
+4;14;0.99676000;0.00397471
+5;20;0.99768000;0.00494119
+6;27;0.99800000;0.00615067
+
+SELEÇÃO_LAMBDA: R=10; lambda_escolhido=1000
+lambda=0;acuracia_media=0.72140000
+lambda=0.25;acuracia_media=0.72140000
+lambda=0.5;acuracia_media=0.72140000
+lambda=0.75;acuracia_media=0.72140000
+lambda=1;acuracia_media=0.72140000
+lambda=10;acuracia_media=0.72140000
+lambda=100;acuracia_media=0.72141000
+lambda=1000;acuracia_media=0.72202000
+
+VALIDAÇÃO_FINAL: R=500; treino=80%; teste=20%; seed=424242
+modelo;acuracia_media;desvio_padrao;maior_valor;menor_valor
+MQO tradicional;0.72309660;0.00643709;0.74280000;0.70070000
+MQO regularizado (1000);0.72387360;0.00643053;0.74380000;0.70080000
+MQO polinomial (q=4);0.99695940;0.00049252;0.99840000;0.99550000
+
+MATRIZ_CONFUSAO_PERCENTUAL
+99.3484;0.0000;0.0000;0.6516;0.0000
+0.0000;99.9899;0.0101;0.0000;0.0000
+0.0000;0.0000;100.0000;0.0000;0.0000
+0.1122;0.0000;0.1887;99.6990;0.0000
+0.0000;0.0000;0.0000;0.5583;99.4417

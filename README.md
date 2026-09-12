@@ -1,27 +1,54 @@
-ENTREGAVEIS
------------
-Relatorio_AV1_IEEE.pdf     relatorio final compilado (modelo IEEE conference, 8 paginas)
-relatorio_latex.zip        projeto LaTeX completo (relatorio.tex + IEEEtran.cls + figuras/)
-regressao.py               Tarefa de Regressao (itens 1 a 7)
-classificacao.py           Tarefa de Classificacao (itens 1 a 6)
-figuras/                   as 9 figuras em PNG
-log_*.txt / saida_*.txt    saida de console e resultados numericos brutos
-Relatorio_AV1_IA_Computacional.docx/.pdf   versao anterior em Word (opcional)
+# Trabalho AV1 — Inteligência Artificial Computacional
 
-COMO EDITAR O RELATORIO
------------------------
-Opcao A (Overleaf): faca upload de relatorio_latex.zip, abra relatorio.tex,
-preencha os nomes/e-mails dos autores e compile com pdfLaTeX.
-No Overleaf o babel existe: descomente \usepackage[brazil]{babel} no preambulo
-e apague os \renewcommand de rotulos logo abaixo (instrucao esta no arquivo).
+Implementação e avaliação de modelos de regressão e classificação por Mínimos Quadrados Ordinários (MQO), regularização de Tikhonov e expansão polinomial.
 
-Opcao B (local): pdflatex relatorio.tex  (rodar duas vezes para as referencias).
+Os modelos são implementados explicitamente a partir das equações normais, utilizando NumPy apenas para operações de álgebra linear; nenhuma biblioteca de aprendizado de máquina contendo implementações prontas dos algoritmos solicitados é utilizada.
 
-COMO EXECUTAR OS CODIGOS
-------------------------
-1) Coloque china_gdp.csv e EMG1.csv na mesma pasta dos scripts.
-2) Crie a subpasta "figuras".
-3) python regressao.py  /  python classificacao.py
+## Estrutura
 
-Dependencias: numpy e matplotlib apenas (nenhuma biblioteca com modelo pronto).
-Semente aleatoria fixa (42) -> os numeros do relatorio sao reproduziveis.
+- `regressao.py`: estima o PIB da China em função do ano.
+- `classificacao.py`: classifica cinco expressões faciais a partir de dois sensores de EMG.
+- `china_gdp.csv`: 55 observações anuais, de 1960 a 2014.
+- `EMG1.csv`: 50.000 observações, dois sensores e uma classe.
+- `relatorio.tex` e `Relatorio_AV1.pdf`: relatório acadêmico e versão compilada.
+- `figuras/`: nove gráficos gerados pelos experimentos.
+- `saida_*.txt` e `resultados_*.csv`: resultados numéricos reproduzíveis.
+- `AUDITORIA_AV1.md` e `CHECKLIST_ENTREGA.md`: conformidade e conferência final.
+
+## Dependências
+
+- Python 3.10 ou posterior
+- NumPy
+- Matplotlib
+
+Instalação opcional em ambiente virtual:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+```
+
+## Execução
+
+Os datasets devem permanecer na raiz do repositório com os nomes `china_gdp.csv` e `EMG1.csv`.
+
+```powershell
+python regressao.py
+python classificacao.py
+```
+
+Os scripts auditam os datasets, criam automaticamente `figuras/`, executam as seleções de hiperparâmetros e as 500 rodadas de validação, e sobrescrevem apenas os resultados derivados. As sementes fixam as partições nas mesmas condições de software; tempos de execução dependem da máquina.
+
+Para verificar a sintaxe:
+
+```powershell
+python -m py_compile regressao.py classificacao.py
+```
+
+Para compilar o relatório, quando `pdflatex` estiver instalado:
+
+```powershell
+pdflatex relatorio.tex
+pdflatex relatorio.tex
+```

@@ -1,98 +1,87 @@
 # -*- coding: utf-8 -*-
-"""
-Inteligencia Artificial Computacional - Trabalho AV1
-TAREFA DE REGRESSAO - china_gdp.csv
+"""Trabalho AV1 — regressão do PIB da China com modelos implementados em NumPy."""
 
-Modelos implementados do zero (apenas numpy para algebra linear):
-    - MQO tradicional (minimos quadrados ordinarios)
-    - MQO regularizado (Tikhonov / Ridge) com lambda = {0, 0.25, 0.5, 0.75, 1}
-    - Regressao Polinomial via MQO (ordem q definida por poda com metrica R2)
-
-Validacao: Random Subsampling Validation, R = 500 rodadas, 80% treino / 20% teste.
-"""
-
+from pathlib import Path
+import csv
 import time
-import numpy as np
+
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import numpy as np
 
-rng = np.random.default_rng(42)
-FIG = "figuras/"
-
-# =====================================================================
-# 1. LEITURA E VISUALIZACAO INICIAL DOS DADOS
-# =====================================================================
-dados = np.loadtxt("china_gdp.csv", delimiter=",", skiprows=1)
-anos = dados[:, 0]
-pib = dados[:, 1]
-N = dados.shape[0]
-
-print("=" * 70)
-print("TAREFA DE REGRESSAO - PIB da China")
-print("=" * 70)
-print(f"Numero de amostras N = {N}  |  periodo: {int(anos.min())}-{int(anos.max())}")
-print(f"PIB minimo  = {pib.min():.4e} USD   ({int(anos[np.argmin(pib)])})")
-print(f"PIB maximo  = {pib.max():.4e} USD   ({int(anos[np.argmax(pib)])})")
-
-plt.figure(figsize=(7, 4.5))
-plt.scatter(anos, pib / 1e12, s=35, c="#1f77b4", edgecolors="k", linewidths=0.4)
-plt.xlabel("Ano")
-plt.ylabel("PIB (trilhões de USD)")
-plt.title("Gráfico de espalhamento – PIB da China (1960–2014)")
-plt.grid(alpha=0.3)
-plt.tight_layout()
-plt.savefig(FIG + "fig1_espalhamento.png", dpi=150)
-plt.close()
-
-# =====================================================================
-# 2. ORGANIZACAO DOS DADOS: X (N x p) e y (N x 1)
-# =====================================================================
-# p = 1 variavel regressora (ano). Padronizacao do regressor (z-score) para
-# condicionamento numerico: ano^8 com ano ~ 2000 ultrapassa 1e26 e destroi a
-# solucao do sistema normal. A padronizacao e' uma transformacao afim, logo
-# nao altera o espaco de funcoes gerado pelo polinomio.
-mu_x, sd_x = anos.mean(), anos.std()
-X = ((anos - mu_x) / sd_x).reshape(N, 1)   # R^{N x p}, p = 1
-y = pib.reshape(N, 1)                      # R^{N x 1}
-print(f"\nDimensoes organizadas -> X: {X.shape}   y: {y.shape}")
+SEED_SELECAO, SEED_VALIDACAO = 42, 4242
+R_PODA, R_VALIDACAO, FRACAO_TREINO = 100, 500, 0.8
+Q_MAX, TOL_R2 = 12, 0.005
+LAMBDAS = (0.0, 0.25, 0.5, 0.75, 1.0)
+ARQUIVO_DADOS, PASTA_FIGURAS = Path("china_gdp.csv"), Path("figuras")
 
 
-# =====================================================================
-# 3. IMPLEMENTACAO DOS MODELOS (do zero)
-# =====================================================================
-def adiciona_intercepto(X):
-    """Concatena a coluna de 1's (termo de intercepto/bias)."""
-    return np.hstack((np.ones((X.shape[0], 1)), X))
+def carregar_dados(caminho):
+    """Lê e valida o dataset sem alterá-lo."""
+    if not caminho.is_file():
+        raise FileNotFoundError(f"Dataset não encontrado: {caminho.resolve()}")
+    try:
+        dados = np.loadtxt(caminho, delimiter=",", skiprows=1)
+    except ValueError as exc:
+        raise ValueError(f"Não foi possível ler {caminho}; esperam-se cabeçalho e duas colunas numéricas.") from exc
+    if dados.shape != (55, 2):
+        raise ValueError(f"Shape inválido em {caminho}: {dados.shape}; esperado: (55, 2).")
+    if not np.isfinite(dados).all():
+        raise ValueError(f"{caminho} contém NaN ou infinito.")
+    anos = dados[:, 0]
+    if not np.array_equal(anos, np.arange(1960, 2015)):
+        raise ValueError("A primeira coluna deve conter, em ordem, todos os anos de 1960 a 2014.")
+    return anos, dados[:, 1]
 
 
-def mqo_tradicional(X, y):
-    """beta = (X^T X)^-1 X^T y, com X ja contendo a coluna de 1's."""
-    Xb = adiciona_intercepto(X)
-    return np.linalg.pinv(Xb.T @ Xb) @ Xb.T @ y
+def ajustar_zscore(x):
+    media, desvio = np.mean(x, axis=0), np.std(x, axis=0)
+    return media, np.where(desvio == 0, 1.0, desvio)
 
 
-def mqo_regularizado(X, y, lbd):
-    """Tikhonov: beta = (X^T X + lambda*I)^-1 X^T y (intercepto nao penalizado)."""
-    Xb = adiciona_intercepto(X)
-    I = np.identity(Xb.shape[1])
-    I[0, 0] = 0.0                      # nao penaliza o intercepto
-    return np.linalg.pinv(Xb.T @ Xb + lbd * I) @ Xb.T @ y
+def aplicar_zscore(x, media, desvio):
+    return (x - media) / desvio
+
+
+def gerar_splits(n, repeticoes, seed):
+    rng, corte = np.random.default_rng(seed), int(FRACAO_TREINO * n)
+    return [(idx[:corte], idx[corte:]) for idx in (rng.permutation(n) for _ in range(repeticoes))]
+
+
+def adiciona_intercepto(x):
+    return np.hstack((np.ones((x.shape[0], 1)), x))
+
+
+def mqo_tradicional(x, y):
+    """Estima o MQO pelas equações normais montadas explicitamente."""
+    xb = adiciona_intercepto(x)
+    gram = xb.T @ xb
+    rhs = xb.T @ y
+    try:
+        return np.linalg.solve(gram, rhs)
+    except np.linalg.LinAlgError:
+        return np.linalg.pinv(gram) @ rhs
+
+
+def mqo_regularizado(x, y, lbd):
+    """Tikhonov manual; por convenção, o intercepto não é penalizado."""
+    xb = adiciona_intercepto(x)
+    penalidade = np.identity(xb.shape[1])
+    penalidade[0, 0] = 0.0
+    return np.linalg.solve(xb.T @ xb + lbd * penalidade, xb.T @ y)
 
 
 def matriz_polinomial(x, q):
-    """Constroi [x, x^2, ..., x^q] (o intercepto e' acrescentado depois)."""
     return np.hstack([x ** k for k in range(1, q + 1)])
 
 
-def mqo_polinomial(X, y, q, lbd=0.0):
-    """Regressao polinomial de ordem q estimada via MQO."""
-    Z = matriz_polinomial(X, q)
-    return mqo_regularizado(Z, y, lbd) if lbd > 0 else mqo_tradicional(Z, y)
+def mqo_polinomial(x, y, q):
+    return mqo_tradicional(matriz_polinomial(x, q), y)
 
 
-def predizer(X, beta):
-    return adiciona_intercepto(X) @ beta
+def predizer(x, beta):
+    return adiciona_intercepto(x) @ beta
 
 
 def mse(y, yhat):
@@ -100,199 +89,159 @@ def mse(y, yhat):
 
 
 def r2(y, yhat):
-    sq_res = np.sum((y - yhat) ** 2)
-    sq_tot = np.sum((y - np.mean(y)) ** 2)
-    return float(1.0 - sq_res / sq_tot)
+    sq_res = float(np.sum((y - yhat) ** 2))
+    sq_tot = float(np.sum((y - np.mean(y)) ** 2))
+    if sq_tot <= np.finfo(float).eps:
+        return 1.0 if sq_res <= np.finfo(float).eps else 0.0
+    return 1.0 - sq_res / sq_tot
 
 
-# =====================================================================
-# 4. DEFINICAO DA ORDEM q DO POLINOMIO (ESTRATEGIA DE PODA VIA R2)
-# =====================================================================
-Q_MAX = 12
-R_PODA = 100          # rodadas de reamostragem usadas so' para escolher q
-TOL = 0.005           # tolerancia de perda de R2 aceita na poda
-
-r2_tr = np.zeros(Q_MAX)
-r2_te = np.zeros(Q_MAX)
-
-for r in range(R_PODA):
-    idx = rng.permutation(N)
-    corte = int(0.8 * N)
-    tr, te = idx[:corte], idx[corte:]
-    for q in range(1, Q_MAX + 1):
-        b = mqo_polinomial(X[tr], y[tr], q)
-        r2_tr[q - 1] += r2(y[tr], predizer(matriz_polinomial(X[tr], q), b))
-        r2_te[q - 1] += r2(y[te], predizer(matriz_polinomial(X[te], q), b))
-
-r2_tr /= R_PODA
-r2_te /= R_PODA
-
-print("\n--- Escolha da ordem q (poda com metrica R2) ---")
-print(f"{'q':>3} {'R2 treino':>12} {'R2 teste':>12}")
-for q in range(1, Q_MAX + 1):
-    print(f"{q:>3} {r2_tr[q-1]:>12.5f} {r2_te[q-1]:>12.5f}")
-
-q_otimo_bruto = int(np.argmax(r2_te)) + 1
-# Poda: parte do melhor q e reduz a ordem enquanto a perda de R2 for irrelevante
-q_star = q_otimo_bruto
-for q in range(1, q_otimo_bruto + 1):
-    if r2_te[q - 1] >= r2_te[q_otimo_bruto - 1] - TOL:
-        q_star = q
-        break
-print(f"\nMaior R2 de teste em q = {q_otimo_bruto} (R2 = {r2_te[q_otimo_bruto-1]:.5f})")
-print(f"Ordem escolhida apos a poda (tolerancia {TOL}): q* = {q_star}"
-      f" (R2 = {r2_te[q_star-1]:.5f})")
-
-fig, axp = plt.subplots(1, 2, figsize=(11, 4.3))
-for k, a in enumerate(axp):
-    a.plot(range(1, Q_MAX + 1), r2_tr, "o-", label="$R^2$ treino")
-    a.plot(range(1, Q_MAX + 1), r2_te, "s-", label="$R^2$ teste")
-    a.axvline(q_star, color="r", ls="--", label=f"q* = {q_star} (poda)")
-    a.set_xlabel("ordem q do polinômio")
-    a.set_ylabel("$R^2$ médio (100 reamostragens)")
-    a.grid(alpha=0.3)
-    a.legend(fontsize=8, loc="lower right")
-axp[0].set_title("Visão geral")
-axp[1].set_title("Ampliação da região de saturação")
-axp[1].set_ylim(0.955, 1.001)
-axp[1].set_xlim(3.5, Q_MAX + 0.3)
-fig.suptitle("Seleção da ordem do polinômio por poda")
-plt.tight_layout()
-plt.savefig(FIG + "fig3_poda_q.png", dpi=150)
-plt.close()
-
-# =====================================================================
-# 5. ESTIMATIVAS DE beta COM TODOS OS DADOS (6 estimativas)
-# =====================================================================
-LAMBDAS = [0.0, 0.25, 0.5, 0.75, 1.0]
-print("\n--- Vetores beta estimados com a base completa ---")
-beta_trad = mqo_tradicional(X, y)
-print(f"MQO tradicional        : b0={beta_trad[0,0]:.6e}  b1={beta_trad[1,0]:.6e}")
-for lbd in LAMBDAS[1:]:
-    b = mqo_regularizado(X, y, lbd)
-    print(f"MQO Tikhonov (l={lbd:<4}) : b0={b[0,0]:.6e}  b1={b[1,0]:.6e}")
-beta_poly = mqo_polinomial(X, y, q_star)
-print(f"Polinomial (q={q_star})        : " +
-      "  ".join(f"b{k}={beta_poly[k,0]:.3e}" for k in range(beta_poly.shape[0])))
-
-# Curvas ajustadas
-grid = np.linspace(anos.min(), anos.max(), 400)
-grid_s = ((grid - mu_x) / sd_x).reshape(-1, 1)
-plt.figure(figsize=(7.5, 5))
-plt.scatter(anos, pib / 1e12, s=30, c="k", label="dados observados", zorder=3)
-plt.plot(grid, predizer(grid_s, beta_trad).ravel() / 1e12, lw=2,
-         label="MQO tradicional")
-for lbd in LAMBDAS[1:]:
-    b = mqo_regularizado(X, y, lbd)
-    plt.plot(grid, predizer(grid_s, b).ravel() / 1e12, lw=1, ls="--",
-             label=f"Tikhonov $\\lambda$={lbd}")
-plt.plot(grid, predizer(matriz_polinomial(grid_s, q_star), beta_poly).ravel() / 1e12,
-         lw=2.5, c="crimson", label=f"Polinomial q={q_star}")
-plt.xlabel("Ano")
-plt.ylabel("PIB (trilhões de USD)")
-plt.title("Modelos ajustados à base completa")
-plt.legend(fontsize=8)
-plt.grid(alpha=0.3)
-plt.tight_layout()
-plt.savefig(FIG + "fig2_modelos_ajustados.png", dpi=150)
-plt.close()
-
-# Sensibilidade do lambda (justifica a discussao do relatorio)
-print("\n--- Sensibilidade ao lambda (norma do desvio em relacao ao MQO) ---")
-for lbd in LAMBDAS[1:]:
-    b = mqo_regularizado(X, y, lbd)
-    dif = np.linalg.norm(b - beta_trad) / np.linalg.norm(beta_trad)
-    print(f"lambda = {lbd:<5} -> desvio relativo de beta = {dif:.3e}")
-
-# =====================================================================
-# 6. RANDOM SUBSAMPLING VALIDATION (R = 500, 80/20)
-# =====================================================================
-R = 500
-modelos = [f"Polinomial (q={q_star})", "MQO tradicional"] + \
-          [f"MQO regularizado ({l})" for l in LAMBDAS[1:]]
-MSE = {m: [] for m in modelos}
-R2 = {m: [] for m in modelos}
-
-t0 = time.time()
-for r in range(R):
-    idx = rng.permutation(N)
-    corte = int(0.8 * N)
-    tr, te = idx[:corte], idx[corte:]
-    Xtr, Xte, ytr, yte = X[tr], X[te], y[tr], y[te]
-
-    # Polinomial
-    b = mqo_polinomial(Xtr, ytr, q_star)
-    yh = predizer(matriz_polinomial(Xte, q_star), b)
-    MSE[modelos[0]].append(mse(yte, yh)); R2[modelos[0]].append(r2(yte, yh))
-
-    # MQO tradicional
-    b = mqo_tradicional(Xtr, ytr)
-    yh = predizer(Xte, b)
-    MSE[modelos[1]].append(mse(yte, yh)); R2[modelos[1]].append(r2(yte, yh))
-
-    # MQO regularizado
-    for j, lbd in enumerate(LAMBDAS[1:]):
-        b = mqo_regularizado(Xtr, ytr, lbd)
-        yh = predizer(Xte, b)
-        nome = modelos[2 + j]
-        MSE[nome].append(mse(yte, yh)); R2[nome].append(r2(yte, yh))
-
-print(f"\nValidacao concluida: R = {R} rodadas em {time.time()-t0:.2f} s")
-
-# =====================================================================
-# 7. TABELAS DE RESULTADOS
-# =====================================================================
-def tabela(dic, titulo, casas="e"):
-    print("\n" + "=" * 92)
-    print(titulo)
-    print("=" * 92)
-    cab = f"{'Modelo':<26}{'Media':>16}{'Desvio-Padrao':>16}{'Maior Valor':>16}{'Menor Valor':>16}"
-    print(cab)
-    print("-" * 92)
-    linhas = []
-    for m in modelos:
-        v = np.array(dic[m])
-        vals = [v.mean(), v.std(), v.max(), v.min()]
-        if casas == "e":
-            txt = "".join(f"{x:>16.4e}" for x in vals)
-        else:
-            txt = "".join(f"{x:>16.4f}" for x in vals)
-        print(f"{m:<26}" + txt)
-        linhas.append([m] + vals)
-    return linhas
+def selecionar_q(anos, y):
+    r2_treino, r2_teste = np.zeros(Q_MAX), np.zeros(Q_MAX)
+    for treino, teste in gerar_splits(len(anos), R_PODA, SEED_SELECAO):
+        media, desvio = ajustar_zscore(anos[treino])
+        xtr = aplicar_zscore(anos[treino], media, desvio).reshape(-1, 1)
+        xte = aplicar_zscore(anos[teste], media, desvio).reshape(-1, 1)
+        for q in range(1, Q_MAX + 1):
+            beta = mqo_polinomial(xtr, y[treino], q)
+            r2_treino[q - 1] += r2(y[treino], predizer(matriz_polinomial(xtr, q), beta))
+            r2_teste[q - 1] += r2(y[teste], predizer(matriz_polinomial(xte, q), beta))
+    r2_treino, r2_teste = r2_treino / R_PODA, r2_teste / R_PODA
+    q_bruto = int(np.argmax(r2_teste)) + 1
+    q_escolhido = int(np.flatnonzero(r2_teste >= r2_teste.max() - TOL_R2)[0]) + 1
+    return q_escolhido, q_bruto, r2_treino, r2_teste
 
 
-lin_mse = tabela(MSE, "METRICA: MSE (erro quadratico medio no conjunto de teste)")
-lin_r2 = tabela(R2, "METRICA: R2 (coeficiente de determinacao no conjunto de teste)", casas="f")
+def validar_modelos(anos, y, q):
+    modelos = ["Polinomial", "MQO tradicional"] + [f"MQO regularizado {lbd:g}" for lbd in LAMBDAS[1:]]
+    resultados_mse = {modelo: [] for modelo in modelos}
+    resultados_r2 = {modelo: [] for modelo in modelos}
+    for treino, teste in gerar_splits(len(anos), R_VALIDACAO, SEED_VALIDACAO):
+        media, desvio = ajustar_zscore(anos[treino])
+        xtr = aplicar_zscore(anos[treino], media, desvio).reshape(-1, 1)
+        xte = aplicar_zscore(anos[teste], media, desvio).reshape(-1, 1)
+        ytr, yte = y[treino], y[teste]
+        beta = mqo_polinomial(xtr, ytr, q)
+        yhat = predizer(matriz_polinomial(xte, q), beta)
+        resultados_mse[modelos[0]].append(mse(yte, yhat))
+        resultados_r2[modelos[0]].append(r2(yte, yhat))
+        beta = mqo_tradicional(xtr, ytr)
+        yhat = predizer(xte, beta)
+        resultados_mse[modelos[1]].append(mse(yte, yhat))
+        resultados_r2[modelos[1]].append(r2(yte, yhat))
+        for posicao, lbd in enumerate(LAMBDAS[1:], start=2):
+            beta = mqo_regularizado(xtr, ytr, lbd)
+            yhat = predizer(xte, beta)
+            resultados_mse[modelos[posicao]].append(mse(yte, yhat))
+            resultados_r2[modelos[posicao]].append(r2(yte, yhat))
+    return modelos, resultados_mse, resultados_r2
 
-np.savetxt("resultados_mse.csv",
-           np.array([[l[1], l[2], l[3], l[4]] for l in lin_mse]),
-           delimiter=",", header="media,desvio,maior,menor", comments="")
-np.savetxt("resultados_r2.csv",
-           np.array([[l[1], l[2], l[3], l[4]] for l in lin_r2]),
-           delimiter=",", header="media,desvio,maior,menor", comments="")
 
-# Boxplots
-fig, ax = plt.subplots(1, 2, figsize=(13, 5))
-ax[0].boxplot([np.array(MSE[m]) / 1e24 for m in modelos], tick_labels=[str(i) for i in range(1,7)])
-ax[0].set_title("MSE por rodada ($\\times 10^{24}$)")
-ax[0].set_xlabel("modelo")
-ax[0].set_yscale("log")
-ax[1].boxplot([R2[m] for m in modelos], tick_labels=[str(i) for i in range(1,7)])
-ax[1].set_title("$R^2$ por rodada")
-ax[1].set_xlabel("modelo")
-for a in ax:
-    a.grid(alpha=0.3)
-fig.suptitle("Random Subsampling Validation (R=500) | 1:Polinomial 2:MQO "
-             "3-6:Tikhonov (0.25, 0.5, 0.75, 1)")
-plt.tight_layout()
-plt.savefig(FIG + "fig4_boxplots_regressao.png", dpi=150)
-plt.close()
+def resumir(valores):
+    vetor = np.asarray(valores)
+    return vetor.mean(), vetor.std(), vetor.max(), vetor.min()
 
-with open("saida_regressao.txt", "w") as f:
-    f.write(f"q* = {q_star}\n")
-    for m in modelos:
-        v, w = np.array(MSE[m]), np.array(R2[m])
-        f.write(f"{m};{v.mean():.6e};{v.std():.6e};{v.max():.6e};{v.min():.6e};"
-                f"{w.mean():.6f};{w.std():.6f};{w.max():.6f};{w.min():.6f}\n")
-print("\nArquivos gerados em figuras/ e saida_regressao.txt")
+
+def salvar_csv(caminho, modelos, resultados):
+    with caminho.open("w", newline="", encoding="utf-8") as arquivo:
+        escritor = csv.writer(arquivo)
+        escritor.writerow(["modelo", "media", "desvio_padrao", "maior_valor", "menor_valor"])
+        for modelo in modelos:
+            escritor.writerow([modelo, *[f"{v:.12e}" for v in resumir(resultados[modelo])]])
+
+
+def imprimir_tabela(modelos, resultados, titulo, notacao):
+    print("\n" + "=" * 94 + f"\n{titulo}\n" + "=" * 94)
+    print(f"{'Modelo':<28}{'Média':>16}{'Desvio-padrão':>18}{'Maior valor':>16}{'Menor valor':>16}")
+    print("-" * 94)
+    for modelo in modelos:
+        texto = "".join(format(v, notacao).rjust(16) for v in resumir(resultados[modelo]))
+        print(f"{modelo:<28}{texto}")
+
+
+def gerar_figuras(anos, pib, y, q, r2_treino, r2_teste, modelos, resultados_mse, resultados_r2):
+    plt.figure(figsize=(7, 4.5))
+    plt.scatter(anos, pib / 1e12, s=35, c="#1f77b4", edgecolors="k", linewidths=0.4)
+    plt.xlabel("Ano"); plt.ylabel("PIB (trilhões de USD)")
+    plt.title("Gráfico de espalhamento — PIB da China (1960–2014)")
+    plt.grid(alpha=0.3); plt.tight_layout()
+    plt.savefig(PASTA_FIGURAS / "fig1_espalhamento.png", dpi=150); plt.close()
+
+    # Ajustes descritivos com a base completa; não são usados nas avaliações de teste.
+    media, desvio = ajustar_zscore(anos)
+    x = aplicar_zscore(anos, media, desvio).reshape(-1, 1)
+    grade = np.linspace(anos.min(), anos.max(), 400)
+    grade_x = aplicar_zscore(grade, media, desvio).reshape(-1, 1)
+    plt.figure(figsize=(7.5, 5))
+    plt.scatter(anos, pib / 1e12, s=30, c="k", label="dados observados", zorder=3)
+    plt.plot(grade, predizer(grade_x, mqo_tradicional(x, y)).ravel() / 1e12, lw=2, label="MQO tradicional")
+    for lbd in LAMBDAS[1:]:
+        beta = mqo_regularizado(x, y, lbd)
+        plt.plot(grade, predizer(grade_x, beta).ravel() / 1e12, lw=1, ls="--", label=f"Tikhonov $\\lambda$={lbd:g}")
+    beta_poly = mqo_polinomial(x, y, q)
+    plt.plot(grade, predizer(matriz_polinomial(grade_x, q), beta_poly).ravel() / 1e12,
+             lw=2.5, c="crimson", label=f"Polinomial q={q}")
+    plt.xlabel("Ano"); plt.ylabel("PIB (trilhões de USD)"); plt.title("Modelos ajustados à base completa")
+    plt.legend(fontsize=8); plt.grid(alpha=0.3); plt.tight_layout()
+    plt.savefig(PASTA_FIGURAS / "fig2_modelos_ajustados.png", dpi=150); plt.close()
+
+    fig, eixos = plt.subplots(1, 2, figsize=(11, 4.3))
+    for eixo in eixos:
+        eixo.plot(range(1, Q_MAX + 1), r2_treino, "o-", label="$R^2$ treino")
+        eixo.plot(range(1, Q_MAX + 1), r2_teste, "s-", label="$R^2$ validação")
+        eixo.axvline(q, color="r", ls="--", label=f"q* = {q}")
+        eixo.set_xlabel("ordem q do polinômio"); eixo.set_ylabel(f"$R^2$ médio ({R_PODA} reamostragens)")
+        eixo.grid(alpha=0.3); eixo.legend(fontsize=8, loc="lower right")
+    eixos[0].set_title("Visão geral")
+    eixos[1].set_title("Ampliação da região de saturação"); eixos[1].set_ylim(0.955, 1.001); eixos[1].set_xlim(3.5, Q_MAX + 0.3)
+    fig.suptitle("Seleção da ordem do polinômio por poda"); plt.tight_layout()
+    plt.savefig(PASTA_FIGURAS / "fig3_poda_q.png", dpi=150); plt.close()
+
+    fig, eixos = plt.subplots(1, 2, figsize=(13, 5))
+    eixos[0].boxplot([np.asarray(resultados_mse[m]) / 1e24 for m in modelos], tick_labels=range(1, 7))
+    eixos[0].set_title("MSE por rodada ($\\times 10^{24}$)"); eixos[0].set_yscale("log")
+    eixos[1].boxplot([resultados_r2[m] for m in modelos], tick_labels=range(1, 7)); eixos[1].set_title("$R^2$ por rodada")
+    for eixo in eixos: eixo.set_xlabel("modelo"); eixo.grid(alpha=0.3)
+    fig.suptitle("Random Subsampling (R=500) | 1: Polinomial; 2: MQO; 3–6: Tikhonov")
+    plt.tight_layout(); plt.savefig(PASTA_FIGURAS / "fig4_boxplots_regressao.png", dpi=150); plt.close()
+
+
+def salvar_saida(q, q_bruto, r2_treino, r2_teste, modelos, resultados_mse, resultados_r2):
+    with Path("saida_regressao.txt").open("w", encoding="utf-8") as arquivo:
+        arquivo.write("AUDITORIA: shape=(55, 2); anos=1960-2014; NaN=0; Inf=0\n")
+        arquivo.write(f"SELEÇÃO_Q: R={R_PODA}; tolerância={TOL_R2}; q_melhor={q_bruto}; q_escolhido={q}\n")
+        arquivo.write("q;R2_treino_medio;R2_validacao_medio\n")
+        for ordem in range(1, Q_MAX + 1):
+            arquivo.write(f"{ordem};{r2_treino[ordem-1]:.8f};{r2_teste[ordem-1]:.8f}\n")
+        arquivo.write("\nVALIDAÇÃO_FINAL: R=500; treino=80%; teste=20%; seed=4242\n")
+        arquivo.write("modelo;MSE_media;MSE_desvio;MSE_max;MSE_min;R2_media;R2_desvio;R2_max;R2_min\n")
+        for modelo in modelos:
+            arquivo.write(modelo + ";" + ";".join(f"{v:.12e}" for v in (*resumir(resultados_mse[modelo]), *resumir(resultados_r2[modelo]))) + "\n")
+
+
+def main():
+    PASTA_FIGURAS.mkdir(exist_ok=True)
+    anos, pib = carregar_dados(ARQUIVO_DADOS)
+    y = pib.reshape(-1, 1)
+    print("=" * 70 + "\nTAREFA DE REGRESSÃO — PIB da China\n" + "=" * 70)
+    print(f"Auditoria OK: shape=(55, 2), período={int(anos.min())}–{int(anos.max())}, NaN=0, Inf=0")
+    print(f"Dimensões organizadas: X={(len(anos), 1)}; y={y.shape}")
+    q, q_bruto, r2_treino, r2_teste = selecionar_q(anos, y)
+    print("\n--- Seleção de q por poda com R² ---")
+    for ordem in range(1, Q_MAX + 1):
+        print(f"q={ordem:2d} | R² treino={r2_treino[ordem-1]: .6f} | R² validação={r2_teste[ordem-1]: .6f}")
+    print(f"Maior R² médio: q={q_bruto}; menor ordem a até {TOL_R2} do máximo: q*={q}")
+    inicio = time.perf_counter()
+    modelos, resultados_mse, resultados_r2 = validar_modelos(anos, y, q)
+    print(f"\nValidação final concluída: {R_VALIDACAO} rodadas em {time.perf_counter()-inicio:.2f} s")
+    imprimir_tabela(modelos, resultados_mse, "MÉTRICA: MSE no conjunto de teste", ".4e")
+    imprimir_tabela(modelos, resultados_r2, "MÉTRICA: R² no conjunto de teste", ".6f")
+    salvar_csv(Path("resultados_mse.csv"), modelos, resultados_mse)
+    salvar_csv(Path("resultados_r2.csv"), modelos, resultados_r2)
+    salvar_saida(q, q_bruto, r2_treino, r2_teste, modelos, resultados_mse, resultados_r2)
+    gerar_figuras(anos, pib, y, q, r2_treino, r2_teste, modelos, resultados_mse, resultados_r2)
+    print("\nArquivos da regressão regenerados com sucesso.")
+
+
+if __name__ == "__main__":
+    main()
